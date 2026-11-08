@@ -25,7 +25,7 @@ const User = mongoose.model('User', new mongoose.Schema({
 }));
 
 // ==========================================
-// 1. API ДЛЯ БАЛАНСА
+// 1. API ДЛЯ БАЛАНСА (ФРОНТЕНД)
 // ==========================================
 app.get('/api/user/:id', async (req, res) => {
   try {
@@ -54,7 +54,7 @@ app.post('/api/user/balance', async (req, res) => {
 });
 
 // ==========================================
-// 2. СОЗДАНИЕ СЧЕТА (ЗВЕЗДЫ)
+// 2. СОЗДАНИЕ СЧЕТА НА ОПЛАТУ ЗВЕЗДАМИ
 // ==========================================
 app.post('/api/create-invoice', async (req, res) => {
   const { telegramId, packageAmount, packagePriceInStars } = req.body;
@@ -64,7 +64,7 @@ app.post('/api/create-invoice', async (req, res) => {
       description: `Пакет ${packagePriceInStars} звезд для Maliton`,
       payload: JSON.stringify({ userId: telegramId, amount: packageAmount }), 
       provider_token: '', // Для Stars всегда пустая строка
-      currency: 'XTR',    // XTR = Telegram Stars
+      currency: 'XTR',    // Валюта Telegram Stars
       prices: [{ label: 'Пакет звезд', amount: packagePriceInStars }], 
     });
     res.json({ invoiceLink });
@@ -75,9 +75,9 @@ app.post('/api/create-invoice', async (req, res) => {
 });
 
 // ==========================================
-// 3. ОБРАБОТЧИКИ ПЛАТЕЖЕЙ TELEGRAM
+// 3. ОБРАБОТЧИКИ ПЛАТЕЖЕЙ
 // ==========================================
-// Вот тот самый важный обработчик! Он подтверждает оплату.
+// Подтверждение готовности принять оплату (защита от отмены)
 bot.on('pre_checkout_query', async (ctx) => {
   try { 
     await ctx.answerPreCheckoutQuery(true); 
@@ -86,7 +86,7 @@ bot.on('pre_checkout_query', async (ctx) => {
   }
 });
 
-// Этот обработчик ловит успешную оплату и начисляет баланс
+// Начисление баланса после успешной оплаты
 bot.on('message', async (ctx) => {
   if (!ctx.message.successful_payment) return;
 
