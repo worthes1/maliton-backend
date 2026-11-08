@@ -89,28 +89,34 @@ app.get('/api/matches', async (req, res) => {
 
 app.post('/api/admin/matches', async (req, res) => {
   const { telegramId, tournament, team1, team2, odds1, odds2 } = req.body;
-  
-  if (String(telegramId) !== ADMIN_ID) {
-    return res.status(403).json({ error: 'Доступ запрещен: ваш ID не совпадает с ID админа' });
-  }
+  if (String(telegramId) !== ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
 
   try {
     const newMatch = await Match.create({ 
-      tournament, team1, team2, 
-      odds1: Number(odds1), odds2: Number(odds2) 
+      tournament, team1, team2, odds1: Number(odds1), odds2: Number(odds2) 
     });
     res.json(newMatch);
-  } catch (err) { 
-    // Если база данных не смогла сохранить, показываем точную причину
-    res.status(500).json({ error: `Ошибка базы данных: ${err.message}` }); 
-  }
+  } catch (err) { res.status(500).json({ error: `Ошибка базы данных: ${err.message}` }); }
+});
+
+// НОВЫЙ РОУТ: Редактирование матча
+app.put('/api/admin/matches/:id', async (req, res) => {
+  const { telegramId, tournament, team1, team2, odds1, odds2 } = req.body;
+  if (String(telegramId) !== ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
+
+  try {
+    const updatedMatch = await Match.findByIdAndUpdate(
+      req.params.id,
+      { tournament, team1, team2, odds1: Number(odds1), odds2: Number(odds2) },
+      { new: true } // Вернуть обновленный объект
+    );
+    res.json(updatedMatch);
+  } catch (err) { res.status(500).json({ error: `Ошибка при обновлении: ${err.message}` }); }
 });
 
 app.delete('/api/admin/matches/:id', async (req, res) => {
   const { telegramId } = req.body;
-  if (String(telegramId) !== ADMIN_ID) {
-    return res.status(403).json({ error: 'Доступ запрещен' });
-  }
+  if (String(telegramId) !== ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
 
   try {
     await Match.findByIdAndDelete(req.params.id);
