@@ -7,23 +7,16 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Эти строки не трогай. Программа сама возьмет данные из настроек Render или файла .env
-const MY_TOKEN = process.env.BOT_TOKEN || ''; 
+// Берем данные из настроек Render
+const MY_TOKEN = process.env.BOT_TOKEN || '';
 const MONGO_URI = process.env.MONGO_URI || '';
-
-if (!MY_TOKEN) {
-  console.log('⚠️ ВНИМАНИЕ: Токен бота не найден. Если ты на Render, добавь BOT_TOKEN в Environment.');
-}
 
 const bot = new Telegraf(MY_TOKEN);
 
-// Подключение к БД с увеличенным таймаутом
-mongoose.connect(MONGO_URI, {
-  serverSelectionTimeoutMS: 60000, 
-  socketTimeoutMS: 60000,
-})
+// Подключение к БД
+mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 60000 })
   .then(() => console.log('✅ База данных подключена!'))
-  .catch(err => console.error('❌ Ошибка подключения к БД:', err.message));
+  .catch(err => console.error('❌ Ошибка БД:', err.message));
 
 // Схема пользователя
 const User = mongoose.model('User', new mongoose.Schema({
@@ -31,6 +24,9 @@ const User = mongoose.model('User', new mongoose.Schema({
   balance: { type: Number, default: 1000 }
 }));
 
+// ==========================================
+// 1. API ДЛЯ БАЛАНСА
+// ==========================================
 app.get('/api/user/:id', async (req, res) => {
   try {
     let user = await User.findOne({ telegramId: req.params.id });
@@ -39,7 +35,6 @@ app.get('/api/user/:id', async (req, res) => {
     }
     res.json({ balance: user.balance });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -58,6 +53,9 @@ app.post('/api/user/balance', async (req, res) => {
   }
 });
 
+// ==========================================
+// 2. СОЗДАНИЕ СЧЕТА (ЗВЕЗДЫ)
+// ==========================================
 app.post('/api/create-invoice', async (req, res) => {
   const { telegramId, packageAmount, packagePriceInStars } = req.body;
   try {
@@ -65,8 +63,8 @@ app.post('/api/create-invoice', async (req, res) => {
       title: `Пополнение на ${packageAmount} ₽`,
       description: `Пакет ${packagePriceInStars} звезд для Maliton`,
       payload: JSON.stringify({ userId: telegramId, amount: packageAmount }), 
-      provider_token: '', 
-      currency: 'XTR',    
+      provider_token: '', // Для Stars всегда пустая строка
+      currency: 'XTR',    // XTR = Telegram Stars
       prices: [{ label: 'Пакет звезд', amount: packagePriceInStars }], 
     });
     res.json({ invoiceLink });
@@ -76,13 +74,22 @@ app.post('/api/create-invoice', async (req, res) => {
   }
 });
 
+// ==========================================
+// 3. ОБРАБОТЧИКИ ПЛАТЕЖЕЙ TELEGRAM
+// ==========================================
+// Вот тот самый важный обработчик! Он подтверждает оплату.
 bot.on('pre_checkout_query', async (ctx) => {
-  try { await ctx.answerPreCheckoutQuery(true); } 
-  catch (err) { await ctx.answerPreCheckoutQuery(false, 'Ошибка валидации.'); }
+  try { 
+    await ctx.answerPreCheckoutQuery(true); 
+  } catch (err) { 
+    await ctx.answerPreCheckoutQuery(false, 'Ошибка валидации.'); 
+  }
 });
 
+// Этот обработчик ловит успешную оплату и начисляет баланс
 bot.on('message', async (ctx) => {
   if (!ctx.message.successful_payment) return;
+
   const payment = ctx.message.successful_payment;
   const payload = JSON.parse(payment.invoice_payload);
   
@@ -100,15 +107,22 @@ bot.on('message', async (ctx) => {
   }
 });
 
+// ==========================================
+// 4. ЗАПУСК СЕРВЕРА И ВЕБХУКА
+// ==========================================
 const PORT = process.env.PORT || 5000;
+
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`✅ Сервер запущен на порту ${PORT}`);
   const WEBHOOK_URL = process.env.RENDER_EXTERNAL_URL; 
+  
   if (WEBHOOK_URL && MY_TOKEN) {
     try {
       await bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`);
       app.use(bot.webhookCallback('/webhook'));
       console.log('✅ Вебхук установлен!');
-    } catch (err) { console.error('❌ Ошибка вебхука:', err); }
+    } catch (err) { 
+      console.error('❌ Ошибка вебхука:', err); 
+    }
   }
 });
