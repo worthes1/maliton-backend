@@ -32,15 +32,15 @@ const Withdrawal = mongoose.model('Withdrawal', new mongoose.Schema({
 
 const Match = mongoose.model('Match', new mongoose.Schema({
   tournament: { type: String, required: true },
-  region: { type: String, default: 'CS2' },
+  region: { type: String, default: 'CS2' }, // Теперь сервер будет правильно сохранять сюда игру
   team1: { type: String, required: true },
   team2: { type: String, required: true },
   score1: { type: String, default: '' },
   score2: { type: String, default: '' },
   odds1: { type: Number, required: true },
   odds2: { type: Number, required: true },
-  date: { type: Date, default: Date.now },       // НОВОЕ: дата и время
-  isLive: { type: Boolean, default: false }      // НОВОЕ: статус лайва
+  date: { type: Date, default: Date.now },
+  isLive: { type: Boolean, default: false }
 }));
 
 // ==========================================
@@ -89,13 +89,18 @@ app.get('/api/matches', async (req, res) => {
 });
 
 app.post('/api/admin/matches', async (req, res) => {
-  const { telegramId, tournament, team1, team2, odds1, odds2, date, isLive } = req.body;
+  // ДОБАВИЛИ region СЮДА
+  const { telegramId, tournament, region, team1, team2, odds1, odds2, date, isLive } = req.body;
   if (String(telegramId) !== ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
 
   try {
     const newMatch = await Match.create({ 
-      tournament, team1, team2, 
-      odds1: Number(odds1), odds2: Number(odds2),
+      tournament, 
+      region, // И СЮДА
+      team1, 
+      team2, 
+      odds1: Number(odds1), 
+      odds2: Number(odds2),
       date: date ? new Date(date) : new Date(),
       isLive: Boolean(isLive)
     });
@@ -104,15 +109,20 @@ app.post('/api/admin/matches', async (req, res) => {
 });
 
 app.put('/api/admin/matches/:id', async (req, res) => {
-  const { telegramId, tournament, team1, team2, odds1, odds2, date, isLive } = req.body;
+  // ДОБАВИЛИ region СЮДА
+  const { telegramId, tournament, region, team1, team2, odds1, odds2, date, isLive } = req.body;
   if (String(telegramId) !== ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
 
   try {
     const updatedMatch = await Match.findByIdAndUpdate(
       req.params.id,
       { 
-        tournament, team1, team2, 
-        odds1: Number(odds1), odds2: Number(odds2),
+        tournament, 
+        region, // И СЮДА
+        team1, 
+        team2, 
+        odds1: Number(odds1), 
+        odds2: Number(odds2),
         date: date ? new Date(date) : new Date(),
         isLive: Boolean(isLive)
       },
