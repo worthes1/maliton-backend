@@ -39,7 +39,8 @@ const Match = mongoose.model('Match', new mongoose.Schema({
   score2: { type: String, default: '' },
   odds1: { type: Number, required: true },
   odds2: { type: Number, required: true },
-  date: { type: Date, default: Date.now }
+  date: { type: Date, default: Date.now },       // НОВОЕ: дата и время
+  isLive: { type: Boolean, default: false }      // НОВОЕ: статус лайва
 }));
 
 // ==========================================
@@ -88,27 +89,34 @@ app.get('/api/matches', async (req, res) => {
 });
 
 app.post('/api/admin/matches', async (req, res) => {
-  const { telegramId, tournament, team1, team2, odds1, odds2 } = req.body;
+  const { telegramId, tournament, team1, team2, odds1, odds2, date, isLive } = req.body;
   if (String(telegramId) !== ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
 
   try {
     const newMatch = await Match.create({ 
-      tournament, team1, team2, odds1: Number(odds1), odds2: Number(odds2) 
+      tournament, team1, team2, 
+      odds1: Number(odds1), odds2: Number(odds2),
+      date: date ? new Date(date) : new Date(),
+      isLive: Boolean(isLive)
     });
     res.json(newMatch);
   } catch (err) { res.status(500).json({ error: `Ошибка базы данных: ${err.message}` }); }
 });
 
-// НОВЫЙ РОУТ: Редактирование матча
 app.put('/api/admin/matches/:id', async (req, res) => {
-  const { telegramId, tournament, team1, team2, odds1, odds2 } = req.body;
+  const { telegramId, tournament, team1, team2, odds1, odds2, date, isLive } = req.body;
   if (String(telegramId) !== ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
 
   try {
     const updatedMatch = await Match.findByIdAndUpdate(
       req.params.id,
-      { tournament, team1, team2, odds1: Number(odds1), odds2: Number(odds2) },
-      { new: true } // Вернуть обновленный объект
+      { 
+        tournament, team1, team2, 
+        odds1: Number(odds1), odds2: Number(odds2),
+        date: date ? new Date(date) : new Date(),
+        isLive: Boolean(isLive)
+      },
+      { new: true }
     );
     res.json(updatedMatch);
   } catch (err) { res.status(500).json({ error: `Ошибка при обновлении: ${err.message}` }); }
