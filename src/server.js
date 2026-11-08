@@ -66,7 +66,7 @@ app.listen(PORT, '0.0.0.0', async () => {
   // Устанавливаем вебхук для Telegram
   // Render автоматически выдаст твоему сервису HTTPS-ссылку (например, https://maliton-backend.onrender.com)
   // ВАЖНО: Эту ссылку мы узнаем на Шаге 3, а пока оставь плейсхолдер.
-  const WEBHOOK_URL = 'ВСТАВЬ_СЮДА_ССЫЛКУ_ИЗ_RENDER'; 
+  const WEBHOOK_URL = 'https://maliton-backend-1.onrender.com'; 
   
   try {
     await bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`);
