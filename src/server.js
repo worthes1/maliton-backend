@@ -32,7 +32,7 @@ const Withdrawal = mongoose.model('Withdrawal', new mongoose.Schema({
 
 const Match = mongoose.model('Match', new mongoose.Schema({
   tournament: { type: String, required: true },
-  region: { type: String, default: 'CS2' }, // Теперь сервер будет правильно сохранять сюда игру
+  region: { type: String, default: 'CS2' },
   team1: { type: String, required: true },
   team2: { type: String, required: true },
   score1: { type: String, default: '' },
@@ -40,7 +40,8 @@ const Match = mongoose.model('Match', new mongoose.Schema({
   odds1: { type: Number, required: true },
   odds2: { type: Number, required: true },
   date: { type: Date, default: Date.now },
-  isLive: { type: Boolean, default: false }
+  isLive: { type: Boolean, default: false },
+  isClosed: { type: Boolean, default: false } // НОВОЕ: Закрытие ставок
 }));
 
 // ==========================================
@@ -89,47 +90,39 @@ app.get('/api/matches', async (req, res) => {
 });
 
 app.post('/api/admin/matches', async (req, res) => {
-  // ДОБАВИЛИ region СЮДА
-  const { telegramId, tournament, region, team1, team2, odds1, odds2, date, isLive } = req.body;
+  const { telegramId, tournament, region, team1, team2, odds1, odds2, date, isLive, isClosed } = req.body;
   if (String(telegramId) !== ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
 
   try {
     const newMatch = await Match.create({ 
-      tournament, 
-      region, // И СЮДА
-      team1, 
-      team2, 
-      odds1: Number(odds1), 
-      odds2: Number(odds2),
+      tournament, region, team1, team2, 
+      odds1: Number(odds1), odds2: Number(odds2),
       date: date ? new Date(date) : new Date(),
-      isLive: Boolean(isLive)
+      isLive: Boolean(isLive),
+      isClosed: Boolean(isClosed) // Сохраняем статус
     });
     res.json(newMatch);
-  } catch (err) { res.status(500).json({ error: `Ошибка базы данных: ${err.message}` }); }
+  } catch (err) { res.status(500).json({ error: `Ошибка БД: ${err.message}` }); }
 });
 
 app.put('/api/admin/matches/:id', async (req, res) => {
-  // ДОБАВИЛИ region СЮДА
-  const { telegramId, tournament, region, team1, team2, odds1, odds2, date, isLive } = req.body;
+  const { telegramId, tournament, region, team1, team2, odds1, odds2, date, isLive, isClosed } = req.body;
   if (String(telegramId) !== ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
 
   try {
     const updatedMatch = await Match.findByIdAndUpdate(
       req.params.id,
       { 
-        tournament, 
-        region, // И СЮДА
-        team1, 
-        team2, 
-        odds1: Number(odds1), 
-        odds2: Number(odds2),
+        tournament, region, team1, team2, 
+        odds1: Number(odds1), odds2: Number(odds2),
         date: date ? new Date(date) : new Date(),
-        isLive: Boolean(isLive)
+        isLive: Boolean(isLive),
+        isClosed: Boolean(isClosed) // Обновляем статус
       },
       { new: true }
     );
     res.json(updatedMatch);
-  } catch (err) { res.status(500).json({ error: `Ошибка при обновлении: ${err.message}` }); }
+  } catch (err) { res.status(500).json({ error: `Ошибка обновления: ${err.message}` }); }
 });
 
 app.delete('/api/admin/matches/:id', async (req, res) => {
