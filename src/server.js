@@ -17,7 +17,6 @@ mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 60000 })
   .then(() => console.log('✅ База данных подключена!'))
   .catch(err => console.error('❌ Ошибка БД:', err.message));
 
-// Схемы
 const User = mongoose.model('User', new mongoose.Schema({
   telegramId: { type: String, unique: true, required: true },
   balance: { type: Number, default: 0 }
@@ -30,7 +29,7 @@ const Withdrawal = mongoose.model('Withdrawal', new mongoose.Schema({
   date: { type: Date, default: Date.now }
 }));
 
-// НОВАЯ Схема матча с поддержкой кастомных маркетов
+// Обновленная схема матча с группами маркетов
 const Match = mongoose.model('Match', new mongoose.Schema({
   tournament: { type: String, required: true },
   region: { type: String, default: 'CS2' },
@@ -39,17 +38,15 @@ const Match = mongoose.model('Match', new mongoose.Schema({
   score1: { type: String, default: '' },
   score2: { type: String, default: '' },
   markets: [{ 
-    name: { type: String, required: true }, // Название (П1, ТБ 2.5 и т.д.)
-    odds: { type: Number, required: true }  // Коэффициент
+    group: { type: String, default: 'Основные' }, // Группа (например, Победитель)
+    name: { type: String, required: true },      // Исход (например, П1)
+    odds: { type: Number, required: true }       // Коэффициент
   }],
   date: { type: Date, default: Date.now },
   isLive: { type: Boolean, default: false },
   isClosed: { type: Boolean, default: false }
 }));
 
-// ==========================================
-// 1. API ДЛЯ БАЛАНСА
-// ==========================================
 app.get('/api/user/:id', async (req, res) => {
   try {
     let user = await User.findOne({ telegramId: req.params.id });
@@ -66,9 +63,6 @@ app.post('/api/user/balance', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ==========================================
-// 2. API ДЛЯ ВЫВОДА
-// ==========================================
 app.post('/api/withdraw', async (req, res) => {
   const { telegramId, amount } = req.body;
   if (amount < 100) return res.status(400).json({ error: 'Минимальная сумма 100 ₽' });
@@ -82,9 +76,6 @@ app.post('/api/withdraw', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ==========================================
-// 3. API ДЛЯ СПОРТА (МАТЧИ)
-// ==========================================
 app.get('/api/matches', async (req, res) => {
   try {
     const matches = await Match.find().sort({ date: -1 });
@@ -136,9 +127,6 @@ app.delete('/api/admin/matches/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ==========================================
-// 4. ОПЛАТА ЗВЕЗДАМИ
-// ==========================================
 app.post('/api/create-invoice', async (req, res) => {
   const { telegramId, packageAmount, packagePriceInStars } = req.body;
   try {
