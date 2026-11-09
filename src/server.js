@@ -17,8 +17,13 @@ mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 60000 })
   .then(async () => {
     console.log('✅ База данных подключена!');
     const superAdmin = await Admin.findOne({ telegramId: SUPER_ADMIN_ID });
-    if (!superAdmin) {
-      await Admin.create({ telegramId: SUPER_ADMIN_ID, role: 'super' });
+    if (!superAdmin) await Admin.create({ telegramId: SUPER_ADMIN_ID, role: 'super' });
+    
+    // Создаем тестовый промокод, если его нет
+    const testPromo = await Promo.findOne({ code: 'MALITON100' });
+    if (!testPromo) {
+      await Promo.create({ code: 'MALITON100', amount: 100, limit: 100, used: 0 });
+      console.log('🎁 Тестовый промокод MALITON100 создан!');
     }
   })
   .catch(err => console.error('❌ Ошибка БД:', err.message));
@@ -35,40 +40,30 @@ const Admin = mongoose.model('Admin', new mongoose.Schema({
 }));
 
 const Match = mongoose.model('Match', new mongoose.Schema({
-  tournament: { type: String, required: true },
-  region: { type: String, default: 'CS2' },
-  team1: { type: String, required: true },
-  team2: { type: String, required: true },
+  tournament: String, region: String, team1: String, team2: String,
   markets: [{ group: String, name: String, odds: Number }],
   date: { type: Date, default: Date.now },
-  isLive: { type: Boolean, default: false },
-  isClosed: { type: Boolean, default: false }
+  isLive: { type: Boolean, default: false }, isClosed: { type: Boolean, default: false }
 }));
 
-// НОВАЯ Схема: Ставки
 const Bet = mongoose.model('Bet', new mongoose.Schema({
-  telegramId: { type: String, required: true },
-  matchName: { type: String, required: true },
-  market: { type: String, required: true },
-  odd: { type: Number, required: true },
-  stake: { type: Number, required: true },
-  potentialWin: { type: Number, required: true },
-  status: { type: String, default: 'pending' }, // pending, win, lose
-  date: { type: Date, default: Date.now }
+  telegramId: String, matchName: String, market: String, odd: Number, stake: Number, potentialWin: Number,
+  status: { type: String, default: 'pending' }, date: { type: Date, default: Date.now }
 }));
 
-// НОВАЯ Схема: Транзакции (Пополнения и Выводы)
 const Transaction = mongoose.model('Transaction', new mongoose.Schema({
-  telegramId: { type: String, required: true },
-  type: { type: String, required: true }, // deposit, withdraw
-  amount: { type: Number, required: true },
-  status: { type: String, default: 'success' },
-  date: { type: Date, default: Date.now }
+  telegramId: String, type: String, amount: Number, status: { type: String, default: 'success' }, date: { type: Date, default: Date.now }
 }));
 
-// ==========================================
-// API ДЛЯ БАЛАНСА
-// ==========================================
+// НОВАЯ Схема Промокодов
+const Promo = mongoose.model('Promo', new mongoose.Schema({
+  code: { type: String, unique: true, required: true },
+  amount: { type: Number, required: true },
+  limit: { type: Number, default: 100 },
+  used: { type: Number, default: 0 }
+}));
+
+// API БАЛАНСА
 app.get('/api/user/:id', async (req, res) => {
   try {
     let user = await User.findOne({ telegramId: req.params.id });
@@ -85,59 +80,66 @@ app.post('/api/user/balance', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ==========================================
-// API ДЛЯ СТАВОК
-// ==========================================
+// API СТАВОК
 app.post('/api/bets', async (req, res) => {
   const { telegramId, matchName, market, odd, stake, potentialWin } = req.body;
   try {
     const user = await User.findOne({ telegramId });
     if (!user || user.balance < stake) return res.status(400).json({ error: 'Недостаточно средств' });
-
-    user.balance -= stake;
-    await user.save();
-
-    const newBet = await Bet.create({ telegramId, matchName, market, odd, stake, potentialWin });
+    user.balance -= stake; await user.save();
+    await Bet.create({ telegramId, matchName, market, odd, stake, potentialWin });
     res.json({ success: true, balance: user.balance });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/bets/:id', async (req, res) => {
-  try {
-    const bets = await Bet.find({ telegramId: req.params.id }).sort({ date: -1 });
-    res.json(bets);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { res.json(await Bet.find({ telegramId: req.params.id }).sort({ date: -1 })); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ==========================================
-// API ДЛЯ ИСТОРИИ ПЛАТЕЖЕЙ
-// ==========================================
+// API ТРАНЗАКЦИЙ
 app.get('/api/transactions/:id', async (req, res) => {
-  try {
-    const trans = await Transaction.find({ telegramId: req.params.id }).sort({ date: -1 });
-    res.json(trans);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { res.json(await Transaction.find({ telegramId: req.params.id }).sort({ date: -1 })); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ВЫВОД
 app.post('/api/withdraw', async (req, res) => {
   const { telegramId, amount } = req.body;
-  if (amount < 100) return res.status(400).json({ error: 'Минимальная сумма 100 ₽' });
+  if (amount < 100) return res.status(400).json({ error: 'Минимум 100 ₽' });
   try {
     const user = await User.findOne({ telegramId });
     if (!user || user.balance < amount) return res.status(400).json({ error: 'Недостаточно средств' });
-    
-    user.balance -= amount;
-    await user.save();
-    
+    user.balance -= amount; await user.save();
     await Transaction.create({ telegramId, type: 'withdraw', amount, status: 'pending' });
     res.json({ balance: user.balance, message: 'Заявка создана' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ==========================================
-// API ДЛЯ АДМИНОВ
-// ==========================================
+// НОВЫЙ API: АКТИВАЦИЯ ПРОМОКОДА
+app.post('/api/promo/activate', async (req, res) => {
+  const { telegramId, code } = req.body;
+  try {
+    const promo = await Promo.findOne({ code: code.toUpperCase() });
+    if (!promo) return res.status(400).json({ error: 'Промокод не найден' });
+    if (promo.used >= promo.limit) return res.status(400).json({ error: 'Промокод больше не действителен' });
+
+    // Начисляем баланс
+    const user = await User.findOne({ telegramId });
+    if (!user) return res.status(400).json({ error: 'Пользователь не найден' });
+    
+    user.balance += promo.amount;
+    await user.save();
+
+    // Обновляем счетчик использований
+    promo.used += 1;
+    await promo.save();
+
+    // Записываем в историю
+    await Transaction.create({ telegramId, type: 'deposit', amount: promo.amount, status: 'success' });
+
+    res.json({ success: true, balance: user.balance, amount: promo.amount });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// АДМИНЫ
 app.get('/api/admin/check/:id', async (req, res) => {
   try {
     const admin = await Admin.findOne({ telegramId: req.params.id });
@@ -166,9 +168,7 @@ app.delete('/api/admin/:id', async (req, res) => {
   try { await Admin.deleteOne({ telegramId: req.params.id }); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ==========================================
-// API ДЛЯ МАТЧЕЙ
-// ==========================================
+// МАТЧИ
 const checkAdmin = async (req, res, next) => {
   const id = req.body.telegramId || req.query.telegramId;
   const admin = await Admin.findOne({ telegramId: String(id) });
@@ -192,18 +192,14 @@ app.delete('/api/admin/matches/:id', checkAdmin, async (req, res) => {
   try { await Match.findByIdAndDelete(req.params.id); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ==========================================
-// ОПЛАТА ЗВЕЗДАМИ
-// ==========================================
+// ОПЛАТА
 app.post('/api/create-invoice', async (req, res) => {
   const { telegramId, packageAmount, packagePriceInStars } = req.body;
   try {
     const invoiceLink = await bot.telegram.createInvoiceLink({
-      title: `Пополнение на ${packageAmount} ₽`,
-      description: `Пакет ${packagePriceInStars} звезд`,
+      title: `Пополнение на ${packageAmount} ₽`, description: `Пакет ${packagePriceInStars} звезд`,
       payload: JSON.stringify({ userId: telegramId, amount: packageAmount }), 
-      provider_token: '', currency: 'XTR',    
-      prices: [{ label: 'Пакет звезд', amount: packagePriceInStars }], 
+      provider_token: '', currency: 'XTR', prices: [{ label: 'Пакет звезд', amount: packagePriceInStars }], 
     });
     res.json({ invoiceLink });
   } catch (err) { res.status(500).json({ error: 'Ошибка создания' }); }
@@ -221,8 +217,6 @@ bot.on('message', async (ctx) => {
     const user = await User.findOne({ telegramId: payload.userId.toString() });
     if (user) { user.balance += payload.amount; await user.save(); }
     else { await User.create({ telegramId: payload.userId.toString(), balance: payload.amount }); }
-    
-    // Записываем транзакцию
     await Transaction.create({ telegramId: payload.userId.toString(), type: 'deposit', amount: payload.amount });
     await ctx.reply(`✅ Зачислено ${payload.amount} ₽.`);
   } catch (err) { console.error(err); }
