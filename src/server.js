@@ -9,18 +9,16 @@ app.use(express.json());
 
 const MY_TOKEN = process.env.BOT_TOKEN || '';
 const MONGO_URI = process.env.MONGO_URI || '';
-const SUPER_ADMIN_ID = '5234247365'; // Твой главный ID
+const SUPER_ADMIN_ID = '5234247365';
 
 const bot = new Telegraf(MY_TOKEN);
 
 mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 60000 })
   .then(async () => {
     console.log('✅ База данных подключена!');
-    // Автоматически создаем Главного админа при запуске, если его нет
     const superAdmin = await Admin.findOne({ telegramId: SUPER_ADMIN_ID });
     if (!superAdmin) {
       await Admin.create({ telegramId: SUPER_ADMIN_ID, role: 'super' });
-      console.log('👑 Главный администратор добавлен в базу.');
     }
   })
   .catch(err => console.error('❌ Ошибка БД:', err.message));
@@ -31,11 +29,9 @@ const User = mongoose.model('User', new mongoose.Schema({
   balance: { type: Number, default: 0 }
 }));
 
-const Withdrawal = mongoose.model('Withdrawal', new mongoose.Schema({
-  telegramId: { type: String, required: true },
-  amount: { type: Number, required: true },
-  status: { type: String, default: 'pending' },
-  date: { type: Date, default: Date.now }
+const Admin = mongoose.model('Admin', new mongoose.Schema({
+  telegramId: { type: String, unique: true, required: true },
+  role: { type: String, enum: ['super', 'regular'], default: 'regular' }
 }));
 
 const Match = mongoose.model('Match', new mongoose.Schema({
@@ -43,26 +39,35 @@ const Match = mongoose.model('Match', new mongoose.Schema({
   region: { type: String, default: 'CS2' },
   team1: { type: String, required: true },
   team2: { type: String, required: true },
-  score1: { type: String, default: '' },
-  score2: { type: String, default: '' },
-  markets: [{ 
-    group: { type: String, default: 'Основные' }, 
-    name: { type: String, required: true },      
-    odds: { type: Number, required: true }       
-  }],
+  markets: [{ group: String, name: String, odds: Number }],
   date: { type: Date, default: Date.now },
   isLive: { type: Boolean, default: false },
   isClosed: { type: Boolean, default: false }
 }));
 
-// НОВАЯ Схема Администраторов
-const Admin = mongoose.model('Admin', new mongoose.Schema({
-  telegramId: { type: String, unique: true, required: true },
-  role: { type: String, enum: ['super', 'regular'], default: 'regular' }
+// НОВАЯ Схема: Ставки
+const Bet = mongoose.model('Bet', new mongoose.Schema({
+  telegramId: { type: String, required: true },
+  matchName: { type: String, required: true },
+  market: { type: String, required: true },
+  odd: { type: Number, required: true },
+  stake: { type: Number, required: true },
+  potentialWin: { type: Number, required: true },
+  status: { type: String, default: 'pending' }, // pending, win, lose
+  date: { type: Date, default: Date.now }
+}));
+
+// НОВАЯ Схема: Транзакции (Пополнения и Выводы)
+const Transaction = mongoose.model('Transaction', new mongoose.Schema({
+  telegramId: { type: String, required: true },
+  type: { type: String, required: true }, // deposit, withdraw
+  amount: { type: Number, required: true },
+  status: { type: String, default: 'success' },
+  date: { type: Date, default: Date.now }
 }));
 
 // ==========================================
-// 1. API ДЛЯ БАЛАНСА
+// API ДЛЯ БАЛАНСА
 // ==========================================
 app.get('/api/user/:id', async (req, res) => {
   try {
@@ -81,25 +86,58 @@ app.post('/api/user/balance', async (req, res) => {
 });
 
 // ==========================================
-// 2. API ДЛЯ ВЫВОДА
+// API ДЛЯ СТАВОК
 // ==========================================
+app.post('/api/bets', async (req, res) => {
+  const { telegramId, matchName, market, odd, stake, potentialWin } = req.body;
+  try {
+    const user = await User.findOne({ telegramId });
+    if (!user || user.balance < stake) return res.status(400).json({ error: 'Недостаточно средств' });
+
+    user.balance -= stake;
+    await user.save();
+
+    const newBet = await Bet.create({ telegramId, matchName, market, odd, stake, potentialWin });
+    res.json({ success: true, balance: user.balance });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/bets/:id', async (req, res) => {
+  try {
+    const bets = await Bet.find({ telegramId: req.params.id }).sort({ date: -1 });
+    res.json(bets);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ==========================================
+// API ДЛЯ ИСТОРИИ ПЛАТЕЖЕЙ
+// ==========================================
+app.get('/api/transactions/:id', async (req, res) => {
+  try {
+    const trans = await Transaction.find({ telegramId: req.params.id }).sort({ date: -1 });
+    res.json(trans);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ВЫВОД
 app.post('/api/withdraw', async (req, res) => {
   const { telegramId, amount } = req.body;
   if (amount < 100) return res.status(400).json({ error: 'Минимальная сумма 100 ₽' });
   try {
     const user = await User.findOne({ telegramId });
     if (!user || user.balance < amount) return res.status(400).json({ error: 'Недостаточно средств' });
+    
     user.balance -= amount;
     await user.save();
-    await Withdrawal.create({ telegramId, amount });
+    
+    await Transaction.create({ telegramId, type: 'withdraw', amount, status: 'pending' });
     res.json({ balance: user.balance, message: 'Заявка создана' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ==========================================
-// 3. API ДЛЯ УПРАВЛЕНИЯ АДМИНАМИ
+// API ДЛЯ АДМИНОВ
 // ==========================================
-// Проверка, является ли пользователь админом (для фронтенда)
 app.get('/api/admin/check/:id', async (req, res) => {
   try {
     const admin = await Admin.findOne({ telegramId: req.params.id });
@@ -107,114 +145,72 @@ app.get('/api/admin/check/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Получить список всех админов (только Гл. Админ)
 app.get('/api/admin/list', async (req, res) => {
   if (String(req.query.telegramId) !== SUPER_ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
-  try {
-    const admins = await Admin.find();
-    res.json(admins);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { res.json(await Admin.find()); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Добавить нового админа (только Гл. Админ)
 app.post('/api/admin/add', async (req, res) => {
-  const { telegramId, newAdminId, role } = req.body;
+  const { telegramId, newAdminId } = req.body;
   if (String(telegramId) !== SUPER_ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
-  
-  if (newAdminId === SUPER_ADMIN_ID) return res.status(400).json({ error: 'Этот ID уже Гл. Админ' });
-
   try {
-    const exists = await Admin.findOne({ telegramId: newAdminId });
-    if (exists) return res.status(400).json({ error: 'Этот ID уже админ' });
-    
-    const newAdmin = await Admin.create({ telegramId: newAdminId, role: role || 'regular' });
-    res.json(newAdmin);
+    if (await Admin.findOne({ telegramId: newAdminId })) return res.status(400).json({ error: 'Уже админ' });
+    res.json(await Admin.create({ telegramId: newAdminId, role: 'regular' }));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Удалить админа (только Гл. Админ)
 app.delete('/api/admin/:id', async (req, res) => {
   const { telegramId } = req.body;
   if (String(telegramId) !== SUPER_ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
-  if (req.params.id === SUPER_ADMIN_ID) return res.status(400).json({ error: 'Нельзя удалить Гл. Админа' });
-
-  try {
-    await Admin.deleteOne({ telegramId: req.params.id });
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  if (req.params.id === SUPER_ADMIN_ID) return res.status(400).json({ error: 'Нельзя удалить Главного' });
+  try { await Admin.deleteOne({ telegramId: req.params.id }); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-
 // ==========================================
-// 4. API ДЛЯ МАТЧЕЙ (Требует прав Админа)
+// API ДЛЯ МАТЧЕЙ
 // ==========================================
 const checkAdmin = async (req, res, next) => {
   const id = req.body.telegramId || req.query.telegramId;
-  if (!id) return res.status(401).json({ error: 'Нет ID' });
   const admin = await Admin.findOne({ telegramId: String(id) });
   if (!admin) return res.status(403).json({ error: 'Вы не администратор' });
   next();
 };
 
 app.get('/api/matches', async (req, res) => {
-  try {
-    const matches = await Match.find().sort({ date: -1 });
-    res.json(matches);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { res.json(await Match.find().sort({ date: -1 })); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/admin/matches', checkAdmin, async (req, res) => {
-  const { tournament, region, team1, team2, markets, date, isLive, isClosed } = req.body;
-  try {
-    const newMatch = await Match.create({ 
-      tournament, region, team1, team2, markets,
-      date: date ? new Date(date) : new Date(),
-      isLive: Boolean(isLive), isClosed: Boolean(isClosed)
-    });
-    res.json(newMatch);
-  } catch (err) { res.status(500).json({ error: `Ошибка БД: ${err.message}` }); }
+  try { res.json(await Match.create(req.body)); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/admin/matches/:id', checkAdmin, async (req, res) => {
-  const { tournament, region, team1, team2, markets, date, isLive, isClosed } = req.body;
-  try {
-    const updatedMatch = await Match.findByIdAndUpdate(req.params.id, { 
-      tournament, region, team1, team2, markets,
-      date: date ? new Date(date) : new Date(),
-      isLive: Boolean(isLive), isClosed: Boolean(isClosed)
-    }, { new: true });
-    res.json(updatedMatch);
-  } catch (err) { res.status(500).json({ error: `Ошибка обновления: ${err.message}` }); }
+  try { res.json(await Match.findByIdAndUpdate(req.params.id, req.body, { new: true })); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.delete('/api/admin/matches/:id', checkAdmin, async (req, res) => {
-  try {
-    await Match.findByIdAndDelete(req.params.id);
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { await Match.findByIdAndDelete(req.params.id); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ==========================================
-// 5. ОПЛАТА ЗВЕЗДАМИ
+// ОПЛАТА ЗВЕЗДАМИ
 // ==========================================
 app.post('/api/create-invoice', async (req, res) => {
   const { telegramId, packageAmount, packagePriceInStars } = req.body;
   try {
     const invoiceLink = await bot.telegram.createInvoiceLink({
       title: `Пополнение на ${packageAmount} ₽`,
-      description: `Пакет ${packagePriceInStars} звезд для Maliton`,
+      description: `Пакет ${packagePriceInStars} звезд`,
       payload: JSON.stringify({ userId: telegramId, amount: packageAmount }), 
-      provider_token: '', 
-      currency: 'XTR',    
+      provider_token: '', currency: 'XTR',    
       prices: [{ label: 'Пакет звезд', amount: packagePriceInStars }], 
     });
     res.json({ invoiceLink });
-  } catch (err) { res.status(500).json({ error: 'Не удалось создать счет' }); }
+  } catch (err) { res.status(500).json({ error: 'Ошибка создания' }); }
 });
 
 bot.on('pre_checkout_query', async (ctx) => {
-  try { await ctx.answerPreCheckoutQuery(true); } 
-  catch (err) { await ctx.answerPreCheckoutQuery(false, 'Ошибка валидации.'); }
+  try { await ctx.answerPreCheckoutQuery(true); } catch (err) { await ctx.answerPreCheckoutQuery(false, 'Ошибка'); }
 });
 
 bot.on('message', async (ctx) => {
@@ -225,19 +221,22 @@ bot.on('message', async (ctx) => {
     const user = await User.findOne({ telegramId: payload.userId.toString() });
     if (user) { user.balance += payload.amount; await user.save(); }
     else { await User.create({ telegramId: payload.userId.toString(), balance: payload.amount }); }
-    await ctx.reply(`✅ Оплата прошла! Зачислено ${payload.amount} ₽.`);
+    
+    // Записываем транзакцию
+    await Transaction.create({ telegramId: payload.userId.toString(), type: 'deposit', amount: payload.amount });
+    await ctx.reply(`✅ Зачислено ${payload.amount} ₽.`);
   } catch (err) { console.error(err); }
 });
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', async () => {
-  console.log(`✅ Сервер запущен на порту ${PORT}`);
+  console.log(`✅ Сервер на порту ${PORT}`);
   const WEBHOOK_URL = process.env.RENDER_EXTERNAL_URL; 
   if (WEBHOOK_URL && MY_TOKEN) {
     try {
       await bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`);
       app.use(bot.webhookCallback('/webhook'));
       console.log('✅ Вебхук установлен!');
-    } catch (err) { console.error('❌ Ошибка вебхука:', err); }
+    } catch (err) { console.error(err); }
   }
 });
