@@ -19,10 +19,9 @@ mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 60000 })
     const superAdmin = await Admin.findOne({ telegramId: SUPER_ADMIN_ID });
     if (!superAdmin) await Admin.create({ telegramId: SUPER_ADMIN_ID, role: 'super' });
     
-    // Создаем тестовый промокод, если его нет
     const testPromo = await Promo.findOne({ code: 'MALITON100' });
     if (!testPromo) {
-      await Promo.create({ code: 'MALITON100', amount: 100, limit: 100, used: 0 });
+      await Promo.create({ code: 'MALITON100', amount: 100, limit: 100, used: 0, usedBy: [] });
       console.log('🎁 Тестовый промокод MALITON100 создан!');
     }
   })
@@ -55,12 +54,13 @@ const Transaction = mongoose.model('Transaction', new mongoose.Schema({
   telegramId: String, type: String, amount: Number, status: { type: String, default: 'success' }, date: { type: Date, default: Date.now }
 }));
 
-// НОВАЯ Схема Промокодов
+// ОБНОВЛЕННАЯ Схема Промокодов
 const Promo = mongoose.model('Promo', new mongoose.Schema({
   code: { type: String, unique: true, required: true },
   amount: { type: Number, required: true },
   limit: { type: Number, default: 100 },
-  used: { type: Number, default: 0 }
+  used: { type: Number, default: 0 },
+  usedBy: [{ type: String }] // Массив ID тех, кто уже активировал
 }));
 
 // API БАЛАНСА
@@ -113,26 +113,25 @@ app.post('/api/withdraw', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// НОВЫЙ API: АКТИВАЦИЯ ПРОМОКОДА
+// API ПРОМОКОДОВ (Активация)
 app.post('/api/promo/activate', async (req, res) => {
   const { telegramId, code } = req.body;
   try {
     const promo = await Promo.findOne({ code: code.toUpperCase() });
     if (!promo) return res.status(400).json({ error: 'Промокод не найден' });
     if (promo.used >= promo.limit) return res.status(400).json({ error: 'Промокод больше не действителен' });
+    if (promo.usedBy.includes(String(telegramId))) return res.status(400).json({ error: 'Вы уже активировали этот промокод' });
 
-    // Начисляем баланс
     const user = await User.findOne({ telegramId });
     if (!user) return res.status(400).json({ error: 'Пользователь не найден' });
     
     user.balance += promo.amount;
     await user.save();
 
-    // Обновляем счетчик использований
     promo.used += 1;
+    promo.usedBy.push(String(telegramId));
     await promo.save();
 
-    // Записываем в историю
     await Transaction.create({ telegramId, type: 'deposit', amount: promo.amount, status: 'success' });
 
     res.json({ success: true, balance: user.balance, amount: promo.amount });
@@ -166,6 +165,32 @@ app.delete('/api/admin/:id', async (req, res) => {
   if (String(telegramId) !== SUPER_ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
   if (req.params.id === SUPER_ADMIN_ID) return res.status(400).json({ error: 'Нельзя удалить Главного' });
   try { await Admin.deleteOne({ telegramId: req.params.id }); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// API ДЛЯ АДМИНОВ: ПРОМОКОДЫ
+app.get('/api/admin/promos', async (req, res) => {
+  if (String(req.query.telegramId) !== SUPER_ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
+  try { res.json(await Promo.find().sort({ _id: -1 })); } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/promo', async (req, res) => {
+  const { telegramId, code, amount, limit } = req.body;
+  if (String(telegramId) !== SUPER_ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
+  
+  if (!code || !amount || !limit) return res.status(400).json({ error: 'Заполните все поля' });
+
+  try {
+    if (await Promo.findOne({ code: code.toUpperCase() })) return res.status(400).json({ error: 'Такой промокод уже существует' });
+    
+    const newPromo = await Promo.create({ 
+      code: code.toUpperCase(), 
+      amount: Number(amount), 
+      limit: Number(limit), 
+      used: 0, 
+      usedBy: [] 
+    });
+    res.json(newPromo);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // МАТЧИ
