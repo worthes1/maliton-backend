@@ -72,11 +72,10 @@ let rouletteState = {
   timer: 20,
   history: [9, 14, 9, 7, 3, 3, 4, 14, 10, 3],
   players: {}, 
-  currentBets: [], // Лента ставок { maskedId, color, amount }
+  currentBets: [], 
   timerInterval: null
 };
 
-// Функция маскировки ID (например, 5234247365 -> 523***65)
 const maskId = (id) => {
   const str = String(id);
   if (str.length <= 5) return '***';
@@ -136,6 +135,8 @@ const startSpin = () => {
         await user.save();
         
         io.to(socketId).emit('roulette_result', { win: true, amount: winAmount, number: winningNumber, color: winningColor });
+        // ОТПРАВЛЯЕМ ОБНОВЛЕННЫЙ БАЛАНС СРАЗУ ПОСЛЕ ВЫИГРЫША
+        io.to(socketId).emit('roulette_balance', { balance: user.balance });
       } else {
         io.to(socketId).emit('roulette_result', { win: false, amount: 0, number: winningNumber, color: winningColor });
       }
@@ -145,7 +146,7 @@ const startSpin = () => {
     rouletteState.status = 'waiting';
     rouletteState.timer = 20;
     rouletteState.players = {};
-    rouletteState.currentBets = []; // Очищаем ленту ставок
+    rouletteState.currentBets = [];
     broadcastState();
 
   }, 4500);
@@ -176,24 +177,16 @@ io.on('connection', (socket) => {
     }
     rouletteState.players[socket.id].bets[color] += amount;
 
-    // Добавляем в ленту ставок
-    rouletteState.currentBets.unshift({
-      maskedId: maskId(telegramId),
-      color,
-      amount
-    });
-    
-    // Ограничиваем ленту последними 20 ставками
-    if (rouletteState.currentBets.length > 20) {
-      rouletteState.currentBets.pop();
-    }
+    rouletteState.currentBets.unshift({ maskedId: maskId(telegramId), color, amount });
+    if (rouletteState.currentBets.length > 20) rouletteState.currentBets.pop();
 
     if (rouletteState.status === 'waiting') {
       startCountdown();
     }
 
+    // ОТПРАВЛЯЕМ ОБНОВЛЕННЫЙ БАЛАНС ПОСЛЕ СТАВКИ
     socket.emit('roulette_balance', { balance: user.balance });
-    broadcastState(); // Рассылаем обновленную ленту всем
+    broadcastState();
   });
 
   socket.on('disconnect', () => {
@@ -202,7 +195,7 @@ io.on('connection', (socket) => {
 });
 
 // ==========================================
-// ОСТАЛЬНЫЕ API (без изменений)
+// ОСТАЛЬНЫЕ API
 // ==========================================
 app.get('/api/user/:id', async (req, res) => {
   try {
