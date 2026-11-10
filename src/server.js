@@ -2,10 +2,17 @@ import express from 'express';
 import cors from 'cors';
 import { Telegraf } from 'telegraf';
 import mongoose from 'mongoose';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: { origin: '*', methods: ['GET', 'POST'] }
+});
 
 const MY_TOKEN = process.env.BOT_TOKEN || '';
 const MONGO_URI = process.env.MONGO_URI || '';
@@ -18,12 +25,6 @@ mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 60000 })
     console.log('✅ База данных подключена!');
     const superAdmin = await Admin.findOne({ telegramId: SUPER_ADMIN_ID });
     if (!superAdmin) await Admin.create({ telegramId: SUPER_ADMIN_ID, role: 'super' });
-    
-    const testPromo = await Promo.findOne({ code: 'MALITON100' });
-    if (!testPromo) {
-      await Promo.create({ code: 'MALITON100', amount: 100, limit: 100, used: 0, usedBy: [] });
-      console.log('🎁 Тестовый промокод MALITON100 создан!');
-    }
   })
   .catch(err => console.error('❌ Ошибка БД:', err.message));
 
@@ -54,16 +55,155 @@ const Transaction = mongoose.model('Transaction', new mongoose.Schema({
   telegramId: String, type: String, amount: Number, status: { type: String, default: 'success' }, date: { type: Date, default: Date.now }
 }));
 
-// ОБНОВЛЕННАЯ Схема Промокодов
 const Promo = mongoose.model('Promo', new mongoose.Schema({
   code: { type: String, unique: true, required: true },
   amount: { type: Number, required: true },
   limit: { type: Number, default: 100 },
   used: { type: Number, default: 0 },
-  usedBy: [{ type: String }] // Массив ID тех, кто уже активировал
+  usedBy: [{ type: String }]
 }));
 
-// API БАЛАНСА
+// ==========================================
+// ИГРА РУЛЕТКА (СЕРВЕРНАЯ ЛОГИКА)
+// ==========================================
+const RED_NUMBERS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36];
+const wheelNumbers = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26];
+
+let rouletteState = {
+  status: 'waiting', // waiting, countdown, spinning
+  timer: 20,
+  history: [9, 14, 9, 7, 3, 3, 4, 14, 10, 3],
+  players: {}, // { socketId: { telegramId, bets: { red, green, black } } }
+  timerInterval: null
+};
+
+// Отправка состояния всем клиентам
+const broadcastState = () => {
+  io.emit('roulette_state', {
+    status: rouletteState.status,
+    timer: rouletteState.timer,
+    history: rouletteState.history,
+  });
+};
+
+const startCountdown = () => {
+  if (rouletteState.status !== 'waiting') return;
+  rouletteState.status = 'countdown';
+  rouletteState.timer = 20;
+  broadcastState();
+
+  rouletteState.timerInterval = setInterval(() => {
+    rouletteState.timer -= 1;
+    broadcastState();
+
+    if (rouletteState.timer <= 0) {
+      clearInterval(rouletteState.timerInterval);
+      startSpin();
+    }
+  }, 1000);
+};
+
+const startSpin = () => {
+  rouletteState.status = 'spinning';
+  broadcastState();
+
+  const winningIndex = Math.floor(Math.random() * 37);
+  const winningNumber = wheelNumbers[winningIndex];
+  const winningColor = winningNumber === 0 ? 'green' : (RED_NUMBERS.includes(winningNumber) ? 'red' : 'black');
+
+  // Отправляем клиентам команду крутить колесо к нужному сектору
+  io.emit('roulette_spin', { winningIndex });
+
+  // Через 4 секунды (после анимации) выдаем результаты
+  setTimeout(async () => {
+    // Обрабатываем ставки всех игроков
+    for (const socketId in rouletteState.players) {
+      const player = rouletteState.players[socketId];
+      const user = await User.findOne({ telegramId: player.telegramId });
+      if (!user) continue;
+
+      let totalBet = player.bets.red + player.bets.green + player.bets.black;
+      if (totalBet === 0) continue;
+
+      let winAmount = 0;
+      if (player.bets[winningColor] > 0) {
+        let mult = winningColor === 'green' ? 50 : 2;
+        winAmount = player.bets[winningColor] * mult;
+        user.balance += winAmount;
+        await user.save();
+        
+        // Уведомляем конкретного игрока о выигрыше
+        io.to(socketId).emit('roulette_result', { 
+          win: true, 
+          amount: winAmount, 
+          number: winningNumber, 
+          color: winningColor 
+        });
+      } else {
+        io.to(socketId).emit('roulette_result', { 
+          win: false, 
+          amount: 0, 
+          number: winningNumber, 
+          color: winningColor 
+        });
+      }
+    }
+
+    // Сбрасываем игру
+    rouletteState.history = [winningNumber, ...rouletteState.history.slice(0, 9)];
+    rouletteState.status = 'waiting';
+    rouletteState.timer = 20;
+    rouletteState.players = {};
+    broadcastState();
+
+  }, 4500); // 4 сек анимация + 0.5 сек запас
+};
+
+io.on('connection', (socket) => {
+  // Отправляем текущее состояние новому игроку
+  socket.emit('roulette_state', {
+    status: rouletteState.status,
+    timer: rouletteState.timer,
+    history: rouletteState.history,
+  });
+
+  // Обработка ставки
+  socket.on('roulette_bet', async (data) => {
+    const { telegramId, color, amount } = data;
+    if (rouletteState.status === 'spinning') return;
+
+    const user = await User.findOne({ telegramId });
+    if (!user || user.balance < amount) {
+      return socket.emit('roulette_error', { message: 'Недостаточно средств' });
+    }
+
+    // Списываем баланс
+    user.balance -= amount;
+    await user.save();
+
+    // Добавляем в состояние
+    if (!rouletteState.players[socket.id]) {
+      rouletteState.players[socket.id] = { telegramId, bets: { red: 0, green: 0, black: 0 } };
+    }
+    rouletteState.players[socket.id].bets[color] += amount;
+
+    // Если игра ждала — запускаем таймер
+    if (rouletteState.status === 'waiting') {
+      startCountdown();
+    }
+
+    // Отправляем игроку обновленный баланс
+    socket.emit('roulette_balance', { balance: user.balance });
+  });
+
+  socket.on('disconnect', () => {
+    delete rouletteState.players[socket.id];
+  });
+});
+
+// ==========================================
+// ОСТАЛЬНЫЕ API
+// ==========================================
 app.get('/api/user/:id', async (req, res) => {
   try {
     let user = await User.findOne({ telegramId: req.params.id });
@@ -80,7 +220,6 @@ app.post('/api/user/balance', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// API СТАВОК
 app.post('/api/bets', async (req, res) => {
   const { telegramId, matchName, market, odd, stake, potentialWin } = req.body;
   try {
@@ -96,7 +235,6 @@ app.get('/api/bets/:id', async (req, res) => {
   try { res.json(await Bet.find({ telegramId: req.params.id }).sort({ date: -1 })); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// API ТРАНЗАКЦИЙ
 app.get('/api/transactions/:id', async (req, res) => {
   try { res.json(await Transaction.find({ telegramId: req.params.id }).sort({ date: -1 })); } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -113,7 +251,6 @@ app.post('/api/withdraw', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// API ПРОМОКОДОВ (Активация)
 app.post('/api/promo/activate', async (req, res) => {
   const { telegramId, code } = req.body;
   try {
@@ -133,12 +270,10 @@ app.post('/api/promo/activate', async (req, res) => {
     await promo.save();
 
     await Transaction.create({ telegramId, type: 'deposit', amount: promo.amount, status: 'success' });
-
     res.json({ success: true, balance: user.balance, amount: promo.amount });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// АДМИНЫ
 app.get('/api/admin/check/:id', async (req, res) => {
   try {
     const admin = await Admin.findOne({ telegramId: req.params.id });
@@ -167,7 +302,6 @@ app.delete('/api/admin/:id', async (req, res) => {
   try { await Admin.deleteOne({ telegramId: req.params.id }); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// API ДЛЯ АДМИНОВ: ПРОМОКОДЫ
 app.get('/api/admin/promos', async (req, res) => {
   if (String(req.query.telegramId) !== SUPER_ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
   try { res.json(await Promo.find().sort({ _id: -1 })); } catch (err) { res.status(500).json({ error: err.message }); }
@@ -176,24 +310,15 @@ app.get('/api/admin/promos', async (req, res) => {
 app.post('/api/admin/promo', async (req, res) => {
   const { telegramId, code, amount, limit } = req.body;
   if (String(telegramId) !== SUPER_ADMIN_ID) return res.status(403).json({ error: 'Доступ запрещен' });
-  
   if (!code || !amount || !limit) return res.status(400).json({ error: 'Заполните все поля' });
 
   try {
     if (await Promo.findOne({ code: code.toUpperCase() })) return res.status(400).json({ error: 'Такой промокод уже существует' });
-    
-    const newPromo = await Promo.create({ 
-      code: code.toUpperCase(), 
-      amount: Number(amount), 
-      limit: Number(limit), 
-      used: 0, 
-      usedBy: [] 
-    });
+    const newPromo = await Promo.create({ code: code.toUpperCase(), amount: Number(amount), limit: Number(limit), used: 0, usedBy: [] });
     res.json(newPromo);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// МАТЧИ
 const checkAdmin = async (req, res, next) => {
   const id = req.body.telegramId || req.query.telegramId;
   const admin = await Admin.findOne({ telegramId: String(id) });
@@ -217,7 +342,6 @@ app.delete('/api/admin/matches/:id', checkAdmin, async (req, res) => {
   try { await Match.findByIdAndDelete(req.params.id); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ОПЛАТА
 app.post('/api/create-invoice', async (req, res) => {
   const { telegramId, packageAmount, packagePriceInStars } = req.body;
   try {
@@ -248,7 +372,7 @@ bot.on('message', async (ctx) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, '0.0.0.0', async () => {
+httpServer.listen(PORT, '0.0.0.0', async () => {
   console.log(`✅ Сервер на порту ${PORT}`);
   const WEBHOOK_URL = process.env.RENDER_EXTERNAL_URL; 
   if (WEBHOOK_URL && MY_TOKEN) {
