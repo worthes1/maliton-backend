@@ -10,9 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 const httpServer = createServer(app);
-const io = new Server(httpServer, {
-  cors: { origin: '*', methods: ['GET', 'POST'] }
-});
+const io = new Server(httpServer, { cors: { origin: '*', methods: ['GET', 'POST'] } });
 
 const MY_TOKEN = process.env.BOT_TOKEN || '';
 const MONGO_URI = process.env.MONGO_URI || '';
@@ -64,7 +62,7 @@ const Promo = mongoose.model('Promo', new mongoose.Schema({
 }));
 
 // ==========================================
-// ИГРА РУЛЕТКА (СЕРВЕРНАЯ ЛОГИКА)
+// ИГРА РУЛЕТКА
 // ==========================================
 const RED_NUMBERS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36];
 const wheelNumbers = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26];
@@ -73,16 +71,24 @@ let rouletteState = {
   status: 'waiting', // waiting, countdown, spinning
   timer: 20,
   history: [9, 14, 9, 7, 3, 3, 4, 14, 10, 3],
-  players: {}, // { socketId: { telegramId, bets: { red, green, black } } }
+  players: {}, 
+  currentBets: [], // Лента ставок { maskedId, color, amount }
   timerInterval: null
 };
 
-// Отправка состояния всем клиентам
+// Функция маскировки ID (например, 5234247365 -> 523***65)
+const maskId = (id) => {
+  const str = String(id);
+  if (str.length <= 5) return '***';
+  return str.slice(0, 3) + '***' + str.slice(-2);
+};
+
 const broadcastState = () => {
   io.emit('roulette_state', {
     status: rouletteState.status,
     timer: rouletteState.timer,
     history: rouletteState.history,
+    currentBets: rouletteState.currentBets
   });
 };
 
@@ -111,12 +117,9 @@ const startSpin = () => {
   const winningNumber = wheelNumbers[winningIndex];
   const winningColor = winningNumber === 0 ? 'green' : (RED_NUMBERS.includes(winningNumber) ? 'red' : 'black');
 
-  // Отправляем клиентам команду крутить колесо к нужному сектору
   io.emit('roulette_spin', { winningIndex });
 
-  // Через 4 секунды (после анимации) выдаем результаты
   setTimeout(async () => {
-    // Обрабатываем ставки всех игроков
     for (const socketId in rouletteState.players) {
       const player = rouletteState.players[socketId];
       const user = await User.findOne({ telegramId: player.telegramId });
@@ -132,42 +135,30 @@ const startSpin = () => {
         user.balance += winAmount;
         await user.save();
         
-        // Уведомляем конкретного игрока о выигрыше
-        io.to(socketId).emit('roulette_result', { 
-          win: true, 
-          amount: winAmount, 
-          number: winningNumber, 
-          color: winningColor 
-        });
+        io.to(socketId).emit('roulette_result', { win: true, amount: winAmount, number: winningNumber, color: winningColor });
       } else {
-        io.to(socketId).emit('roulette_result', { 
-          win: false, 
-          amount: 0, 
-          number: winningNumber, 
-          color: winningColor 
-        });
+        io.to(socketId).emit('roulette_result', { win: false, amount: 0, number: winningNumber, color: winningColor });
       }
     }
 
-    // Сбрасываем игру
     rouletteState.history = [winningNumber, ...rouletteState.history.slice(0, 9)];
     rouletteState.status = 'waiting';
     rouletteState.timer = 20;
     rouletteState.players = {};
+    rouletteState.currentBets = []; // Очищаем ленту ставок
     broadcastState();
 
-  }, 4500); // 4 сек анимация + 0.5 сек запас
+  }, 4500);
 };
 
 io.on('connection', (socket) => {
-  // Отправляем текущее состояние новому игроку
   socket.emit('roulette_state', {
     status: rouletteState.status,
     timer: rouletteState.timer,
     history: rouletteState.history,
+    currentBets: rouletteState.currentBets
   });
 
-  // Обработка ставки
   socket.on('roulette_bet', async (data) => {
     const { telegramId, color, amount } = data;
     if (rouletteState.status === 'spinning') return;
@@ -177,23 +168,32 @@ io.on('connection', (socket) => {
       return socket.emit('roulette_error', { message: 'Недостаточно средств' });
     }
 
-    // Списываем баланс
     user.balance -= amount;
     await user.save();
 
-    // Добавляем в состояние
     if (!rouletteState.players[socket.id]) {
       rouletteState.players[socket.id] = { telegramId, bets: { red: 0, green: 0, black: 0 } };
     }
     rouletteState.players[socket.id].bets[color] += amount;
 
-    // Если игра ждала — запускаем таймер
+    // Добавляем в ленту ставок
+    rouletteState.currentBets.unshift({
+      maskedId: maskId(telegramId),
+      color,
+      amount
+    });
+    
+    // Ограничиваем ленту последними 20 ставками
+    if (rouletteState.currentBets.length > 20) {
+      rouletteState.currentBets.pop();
+    }
+
     if (rouletteState.status === 'waiting') {
       startCountdown();
     }
 
-    // Отправляем игроку обновленный баланс
     socket.emit('roulette_balance', { balance: user.balance });
+    broadcastState(); // Рассылаем обновленную ленту всем
   });
 
   socket.on('disconnect', () => {
@@ -202,7 +202,7 @@ io.on('connection', (socket) => {
 });
 
 // ==========================================
-// ОСТАЛЬНЫЕ API
+// ОСТАЛЬНЫЕ API (без изменений)
 // ==========================================
 app.get('/api/user/:id', async (req, res) => {
   try {
