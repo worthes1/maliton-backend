@@ -133,13 +133,13 @@ const spinRoulette = () => {
 };
 
 // ==========================================
-// ИГРА КРАШ (CRASH)
+// ИГРА КРАШ (CRASH) С АВТОВЫВОДОМ
 // ==========================================
 let crashState = {
   status: 'waiting', multiplier: 1.00, crashPoint: 1.00,
-  players: {}, // socketId: { telegramId, bets: [{ amount, cashedOut, winAmount }] }
+  players: {}, 
   timer: 5, timerInterval: null, gameInterval: null,
-  feed: [] // Лента событий (кто поставил, кто забрал)
+  feed: []
 };
 
 const broadcastCrash = () => {
@@ -152,7 +152,7 @@ const startCrashRound = () => {
   crashState.status = 'waiting';
   crashState.multiplier = 1.00;
   crashState.players = {};
-  crashState.feed = []; // Очищаем ленту в начале раунда
+  crashState.feed = [];
   crashState.timer = 10;
   broadcastCrash();
 
@@ -172,39 +172,70 @@ const flyRocket = () => {
   crashState.crashPoint = rand < 0.5 ? 1.00 + Math.random() * 1.5 : 1.5 + Math.random() * 8;
   broadcastCrash();
 
-  crashState.gameInterval = setInterval(() => {
+  crashState.gameInterval = setInterval(async () => {
     crashState.multiplier = Number((crashState.multiplier + 0.02).toFixed(2));
     
+    // Проверяем автовывод для всех игроков
+    for (const socketId in crashState.players) {
+      const player = crashState.players[socketId];
+      const user = await User.findOne({ telegramId: player.telegramId });
+      if (!user) continue;
+
+      player.bets.forEach(async (bet, index) => {
+        // Если ставка есть, не выведена, и кэф достиг автовывода
+        if (bet.amount && !bet.cashedOut && bet.autoCashout && crashState.multiplier >= bet.autoCashout) {
+          const winAmount = Math.floor(bet.amount * bet.autoCashout);
+          bet.cashedOut = true;
+          bet.winAmount = winAmount;
+
+          user.balance += winAmount;
+          await user.save();
+
+          crashState.feed.unshift({ 
+            id: maskId(player.telegramId), 
+            type: 'win', 
+            amount: winAmount, 
+            mult: bet.autoCashout, 
+            slot: index + 1,
+            isAuto: true 
+          });
+          if (crashState.feed.length > 15) crashState.feed.pop();
+
+          io.to(socketId).emit('crash_balance', { balance: user.balance });
+          io.to(socketId).emit('crash_cashout_success', { amount: winAmount, mult: bet.autoCashout, slot: index + 1 });
+          broadcastCrash();
+        }
+      });
+    }
+
+    // Если кэф достиг точки краша
     if (crashState.multiplier >= crashState.crashPoint) {
       clearInterval(crashState.gameInterval);
       crashState.status = 'crashed';
-      broadcastCrash();
-
+      
       // Добавляем в ленту проигравших
       for (const socketId in crashState.players) {
         const player = crashState.players[socketId];
         player.bets.forEach((bet, index) => {
-          if (!bet.cashedOut) {
+          if (bet.amount && !bet.cashedOut) {
             crashState.feed.unshift({ id: maskId(player.telegramId), type: 'lose', amount: bet.amount, slot: index + 1 });
           }
         });
       }
+      
       broadcastCrash();
 
-      setTimeout(async () => {
-        startCrashRound();
-      }, 3000);
+      setTimeout(() => startCrashRound(), 3000);
     } else {
       broadcastCrash();
     }
-  }, 100); // Обновляем каждые 100мс
+  }, 100);
 };
 
 io.on('connection', (socket) => {
   socket.emit('roulette_state', { status: rouletteState.status, timer: rouletteState.timer, history: rouletteState.history, currentBets: rouletteState.currentBets });
   socket.emit('crash_state', { status: crashState.status, multiplier: crashState.multiplier, timer: crashState.timer, feed: crashState.feed });
 
-  // --- РУЛЕТКА ---
   socket.on('roulette_bet', async (data) => {
     const { telegramId, color, amount } = data;
     if (rouletteState.status === 'spinning') return;
@@ -222,9 +253,8 @@ io.on('connection', (socket) => {
     broadcastRoulette();
   });
 
-  // --- КРАШ (Ставка) ---
   socket.on('crash_bet', async (data) => {
-    const { telegramId, amount, slot } = data; // slot: 1 или 2
+    const { telegramId, amount, slot, autoCashout } = data;
     if (crashState.status !== 'waiting') return socket.emit('crash_error', { message: 'Ставки закрыты' });
     const user = await User.findOne({ telegramId });
     if (!user || user.balance < amount) return socket.emit('crash_error', { message: 'Недостаточно средств' });
@@ -232,9 +262,8 @@ io.on('connection', (socket) => {
     user.balance -= amount; await user.save();
     
     if (!crashState.players[socket.id]) crashState.players[socket.id] = { telegramId, bets: [{}, {}] };
-    crashState.players[socket.id].bets[slot - 1] = { amount, cashedOut: false, winAmount: 0 };
+    crashState.players[socket.id].bets[slot - 1] = { amount, cashedOut: false, winAmount: 0, autoCashout };
 
-    // Добавляем в ленту
     crashState.feed.unshift({ id: maskId(telegramId), type: 'bet', amount, slot });
     if (crashState.feed.length > 15) crashState.feed.pop();
 
@@ -242,7 +271,6 @@ io.on('connection', (socket) => {
     broadcastCrash();
   });
 
-  // --- КРАШ (Забрать) ---
   socket.on('crash_cashout', async (data) => {
     const { slot } = data;
     const player = crashState.players[socket.id];
@@ -259,7 +287,6 @@ io.on('connection', (socket) => {
     if (user) {
       user.balance += winAmount; await user.save();
       
-      // Добавляем в ленту выигрыш
       crashState.feed.unshift({ id: maskId(player.telegramId), type: 'win', amount: winAmount, mult: crashState.multiplier, slot });
       if (crashState.feed.length > 15) crashState.feed.pop();
 
