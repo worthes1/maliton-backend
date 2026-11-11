@@ -68,12 +68,8 @@ const RED_NUMBERS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 
 const wheelNumbers = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26];
 
 let rouletteState = {
-  status: 'waiting', // waiting, countdown, spinning
-  timer: 20,
-  history: [9, 14, 9, 7, 3, 3, 4, 14, 10, 3],
-  players: {}, 
-  currentBets: [], 
-  timerInterval: null
+  status: 'waiting', timer: 20, history: [9, 14, 9, 7, 3, 3, 4, 14, 10, 3],
+  players: {}, currentBets: [], timerInterval: null
 };
 
 const maskId = (id) => {
@@ -82,36 +78,28 @@ const maskId = (id) => {
   return str.slice(0, 3) + '***' + str.slice(-2);
 };
 
-const broadcastState = () => {
+const broadcastRoulette = () => {
   io.emit('roulette_state', {
-    status: rouletteState.status,
-    timer: rouletteState.timer,
-    history: rouletteState.history,
-    currentBets: rouletteState.currentBets
+    status: rouletteState.status, timer: rouletteState.timer,
+    history: rouletteState.history, currentBets: rouletteState.currentBets
   });
 };
 
-const startCountdown = () => {
+const startRouletteCountdown = () => {
   if (rouletteState.status !== 'waiting') return;
-  rouletteState.status = 'countdown';
-  rouletteState.timer = 20;
-  broadcastState();
+  rouletteState.status = 'countdown'; rouletteState.timer = 20; broadcastRoulette();
 
   rouletteState.timerInterval = setInterval(() => {
-    rouletteState.timer -= 1;
-    broadcastState();
-
+    rouletteState.timer -= 1; broadcastRoulette();
     if (rouletteState.timer <= 0) {
       clearInterval(rouletteState.timerInterval);
-      startSpin();
+      spinRoulette();
     }
   }, 1000);
 };
 
-const startSpin = () => {
-  rouletteState.status = 'spinning';
-  broadcastState();
-
+const spinRoulette = () => {
+  rouletteState.status = 'spinning'; broadcastRoulette();
   const winningIndex = Math.floor(Math.random() * 37);
   const winningNumber = wheelNumbers[winningIndex];
   const winningColor = winningNumber === 0 ? 'green' : (RED_NUMBERS.includes(winningNumber) ? 'red' : 'black');
@@ -123,7 +111,6 @@ const startSpin = () => {
       const player = rouletteState.players[socketId];
       const user = await User.findOne({ telegramId: player.telegramId });
       if (!user) continue;
-
       let totalBet = player.bets.red + player.bets.green + player.bets.black;
       if (totalBet === 0) continue;
 
@@ -131,68 +118,144 @@ const startSpin = () => {
       if (player.bets[winningColor] > 0) {
         let mult = winningColor === 'green' ? 50 : 2;
         winAmount = player.bets[winningColor] * mult;
-        user.balance += winAmount;
-        await user.save();
-        
+        user.balance += winAmount; await user.save();
         io.to(socketId).emit('roulette_result', { win: true, amount: winAmount, number: winningNumber, color: winningColor });
-        // ОТПРАВЛЯЕМ ОБНОВЛЕННЫЙ БАЛАНС СРАЗУ ПОСЛЕ ВЫИГРЫША
         io.to(socketId).emit('roulette_balance', { balance: user.balance });
       } else {
         io.to(socketId).emit('roulette_result', { win: false, amount: 0, number: winningNumber, color: winningColor });
       }
     }
-
     rouletteState.history = [winningNumber, ...rouletteState.history.slice(0, 9)];
-    rouletteState.status = 'waiting';
-    rouletteState.timer = 20;
-    rouletteState.players = {};
-    rouletteState.currentBets = [];
-    broadcastState();
-
+    rouletteState.status = 'waiting'; rouletteState.timer = 20;
+    rouletteState.players = {}; rouletteState.currentBets = [];
+    broadcastRoulette();
   }, 4500);
 };
 
-io.on('connection', (socket) => {
-  socket.emit('roulette_state', {
-    status: rouletteState.status,
-    timer: rouletteState.timer,
-    history: rouletteState.history,
-    currentBets: rouletteState.currentBets
-  });
+// ==========================================
+// ИГРА КРАШ (CRASH)
+// ==========================================
+let crashState = {
+  status: 'waiting', // waiting, flying, crashed
+  multiplier: 1.00,
+  crashPoint: 1.00,
+  players: {}, // socketId: { telegramId, bet, cashedOut }
+  timer: 5,
+  timerInterval: null,
+  gameInterval: null
+};
 
+const broadcastCrash = () => {
+  io.emit('crash_state', {
+    status: crashState.status,
+    multiplier: crashState.multiplier,
+    timer: crashState.timer
+  });
+};
+
+const startCrashRound = () => {
+  crashState.status = 'waiting';
+  crashState.multiplier = 1.00;
+  crashState.players = {};
+  crashState.timer = 10; // 10 секунд на ставки
+  broadcastCrash();
+
+  crashState.timerInterval = setInterval(() => {
+    crashState.timer -= 1;
+    broadcastCrash();
+    if (crashState.timer <= 0) {
+      clearInterval(crashState.timerInterval);
+      flyRocket();
+    }
+  }, 1000);
+};
+
+const flyRocket = () => {
+  crashState.status = 'flying';
+  // Генерируем точку краша (от 1.00 до 10.00 с шансом на больший кэф)
+  const rand = Math.random();
+  crashState.crashPoint = rand < 0.5 ? 1.00 + Math.random() * 1.5 : 1.5 + Math.random() * 8;
+  broadcastCrash();
+
+  crashState.gameInterval = setInterval(() => {
+    // Ракета летит, кэф растет
+    crashState.multiplier = Number((crashState.multiplier + 0.02).toFixed(2));
+    
+    // Проверяем, не крашнулась ли игра
+    if (crashState.multiplier >= crashState.crashPoint) {
+      clearInterval(crashState.gameInterval);
+      crashState.status = 'crashed';
+      broadcastCrash();
+
+      // Обрабатываем проигрыш тех, кто не успел забрать
+      setTimeout(async () => {
+        startCrashRound();
+      }, 3000);
+    } else {
+      broadcastCrash();
+    }
+  }, 100); // Обновляем каждые 100мс
+};
+
+io.on('connection', (socket) => {
+  // Отправка состояний при подключении
+  socket.emit('roulette_state', { status: rouletteState.status, timer: rouletteState.timer, history: rouletteState.history, currentBets: rouletteState.currentBets });
+  socket.emit('crash_state', { status: crashState.status, multiplier: crashState.multiplier, timer: crashState.timer });
+
+  // --- РУЛЕТКА ---
   socket.on('roulette_bet', async (data) => {
     const { telegramId, color, amount } = data;
     if (rouletteState.status === 'spinning') return;
-
     const user = await User.findOne({ telegramId });
-    if (!user || user.balance < amount) {
-      return socket.emit('roulette_error', { message: 'Недостаточно средств' });
-    }
+    if (!user || user.balance < amount) return socket.emit('roulette_error', { message: 'Недостаточно средств' });
+    user.balance -= amount; await user.save();
 
-    user.balance -= amount;
-    await user.save();
-
-    if (!rouletteState.players[socket.id]) {
-      rouletteState.players[socket.id] = { telegramId, bets: { red: 0, green: 0, black: 0 } };
-    }
+    if (!rouletteState.players[socket.id]) rouletteState.players[socket.id] = { telegramId, bets: { red: 0, green: 0, black: 0 } };
     rouletteState.players[socket.id].bets[color] += amount;
-
     rouletteState.currentBets.unshift({ maskedId: maskId(telegramId), color, amount });
     if (rouletteState.currentBets.length > 20) rouletteState.currentBets.pop();
+    if (rouletteState.status === 'waiting') startRouletteCountdown();
 
-    if (rouletteState.status === 'waiting') {
-      startCountdown();
-    }
-
-    // ОТПРАВЛЯЕМ ОБНОВЛЕННЫЙ БАЛАНС ПОСЛЕ СТАВКИ
     socket.emit('roulette_balance', { balance: user.balance });
-    broadcastState();
+    broadcastRoulette();
+  });
+
+  // --- КРАШ ---
+  socket.on('crash_bet', async (data) => {
+    const { telegramId, amount } = data;
+    if (crashState.status !== 'waiting') return socket.emit('crash_error', { message: 'Ставки закрыты' });
+    const user = await User.findOne({ telegramId });
+    if (!user || user.balance < amount) return socket.emit('crash_error', { message: 'Недостаточно средств' });
+    
+    user.balance -= amount; await user.save();
+    crashState.players[socket.id] = { telegramId, bet: amount, cashedOut: false };
+    
+    socket.emit('crash_balance', { balance: user.balance });
+  });
+
+  socket.on('crash_cashout', async () => {
+    const player = crashState.players[socket.id];
+    if (!player || player.cashedOut || crashState.status !== 'flying') return;
+    
+    const winAmount = Math.floor(player.bet * crashState.multiplier);
+    player.cashedOut = true;
+
+    const user = await User.findOne({ telegramId: player.telegramId });
+    if (user) {
+      user.balance += winAmount; await user.save();
+      socket.emit('crash_balance', { balance: user.balance });
+      socket.emit('crash_cashout_success', { amount: winAmount, mult: crashState.multiplier });
+    }
   });
 
   socket.on('disconnect', () => {
     delete rouletteState.players[socket.id];
+    delete crashState.players[socket.id];
   });
 });
+
+// Запуск первого раунда Краша при старте сервера
+setTimeout(() => startCrashRound(), 5000);
 
 // ==========================================
 // ОСТАЛЬНЫЕ API
@@ -254,14 +317,8 @@ app.post('/api/promo/activate', async (req, res) => {
 
     const user = await User.findOne({ telegramId });
     if (!user) return res.status(400).json({ error: 'Пользователь не найден' });
-    
-    user.balance += promo.amount;
-    await user.save();
-
-    promo.used += 1;
-    promo.usedBy.push(String(telegramId));
-    await promo.save();
-
+    user.balance += promo.amount; await user.save();
+    promo.used += 1; promo.usedBy.push(String(telegramId)); await promo.save();
     await Transaction.create({ telegramId, type: 'deposit', amount: promo.amount, status: 'success' });
     res.json({ success: true, balance: user.balance, amount: promo.amount });
   } catch (err) { res.status(500).json({ error: err.message }); }
